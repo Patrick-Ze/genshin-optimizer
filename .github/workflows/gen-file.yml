@@ -1,0 +1,67 @@
+name: Gen File
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  gen-file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Get Cache Key
+        id: get-cache-key
+        run: |
+          echo "baseKey=$(cat .gitmodules | sha256sum | cut -d " " -f 1)" >> $GITHUB_OUTPUT
+          echo "key=$(git ls-tree -r HEAD | grep '^160000' | sha256sum | cut -d " " -f 1)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: .git/modules
+          key: submodule-${{steps.get-cache-key.outputs.baseKey}}-${{ steps.get-cache-key.outputs.key }}
+          restore-keys: |
+            submodule-${{steps.get-cache-key.outputs.baseKey}}
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # Sparse Checkout 并提取 GenshinData 的 8 位 Commit Hash
+      - name: Sparse Checkout & Get Submodule Hash
+        id: genshin-hash
+        run: |
+          (cd libs/gi/dm/GenshinData && git fetch origin main && git checkout -B main origin/main)
+          # 获取 GenshinData 的前 8 位 Commit Hash
+          HASH=$(cd libs/gi/dm/GenshinData && git rev-parse --short=8 HEAD)
+          echo "short_hash=$HASH" >> $GITHUB_OUTPUT
+          echo "GenshinData latest commit hash: $HASH"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'yarn'
+      - name: Yarn Install
+        run: |
+          yarn install --immutable
+      - name: Check Gen File
+        run: |
+          yarn run nx run-many -t gen-file --verbose
+          echo "Generated files differences:"
+          git status --porcelain || true
+          git diff --name-only || true
+
+      # 在上传附件时使用Hash ID
+      - name: Upload generated files
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-files-${{ steps.genshin-hash.outputs.short_hash }}-${{ github.run_number }}
+          path: |
+            libs/gi/dm/src/dm/material/MaterialExcelConfigData_idmap_gen.json
+          retention-days: 30
